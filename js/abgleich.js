@@ -8,7 +8,7 @@
 import { normalisieren, neueDaten, FORMAT } from "./daten.js";
 import { schreibeStand, leseStand } from "./excel.js";
 
-const LISTEN = ["kinder", "trainings", "uebungen", "ergebnisse", "abzeichen", "erreicht", "turniere", "einvArten"];
+const LISTEN = ["kinder", "trainings", "abzeichen", "erreicht", "turniere", "einvArten"];
 // Listen innerhalb eines Eintrags und ihr Schlüssel
 const SCHLUESSEL = { hcp: "d", tn: "kind" };
 
@@ -34,7 +34,7 @@ export function inhalt(D) {
 }
 export const gleicherInhalt = (a, b) => inhalt(a) === inhalt(b);
 // Hat das Gerät eigene Einträge (mehr als die Startlisten)?
-export const hatEintraege = D => ["kinder", "trainings", "ergebnisse", "erreicht", "turniere"].some(f => (D[f] || []).length);
+export const hatEintraege = D => ["kinder", "trainings", "erreicht", "turniere"].some(f => (D[f] || []).length);
 
 /* ---------- Zusammenführen ---------- */
 function mengen(b = [], l = [], r = []) {
@@ -77,10 +77,11 @@ export function zusammenfuehren(basis, lokal, fern) {
   M.gruppen = mengen(B.gruppen || [], lokal.gruppen || [], fern.gruppen || []);
   M.sicherung = [lokal.sicherung || "", fern.sicherung || ""].sort().pop();
   doppelteZusammenlegen(M, B);
+  M.version = FORMAT; // beide Seiten sind schon im aktuellen Format (keine Umstellung mehr nötig)
   return normalisieren(M);
 }
 // Auf zwei Geräten unabhängig angelegte Doppel zusammenlegen:
-// dasselbe Training (Tag + Gruppe), dasselbe Ergebnis (Tag + Übung + Kind), dasselbe Abzeichen beim Kind.
+// dasselbe Training (Tag + Gruppe), dasselbe Abzeichen beim Kind.
 function doppelteZusammenlegen(M, B) {
   const inBasis = new Set((B.trainings || []).map(x => x.id)), schon = new Map(), raus = new Set();
   for (const x of M.trainings) {
@@ -93,7 +94,6 @@ function doppelteZusammenlegen(M, B) {
   }
   M.trainings = M.trainings.filter(x => !raus.has(x));
   const einmal = (L, schl) => { const s = new Set(); return L.filter(e => { const k = schl(e); if (s.has(k)) return false; s.add(k); return true; }); };
-  M.ergebnisse = einmal(M.ergebnisse, e => e.d + "|" + e.uebung + "|" + e.kind);
   M.erreicht = einmal(M.erreicht, e => e.abz + "|" + e.kind);
 }
 
@@ -121,14 +121,15 @@ export async function abgleich(geraet, drive, XLSX) {
       if (!L.driveOffen) return { daten: L, basis: geraet.basis || nurInhalt(L), aktion: "nichts" };
       return fertig(L, await drive.speichern(schreibeStand(XLSX, L), meta.id), "hochgeladen");
     }
-    const R = leseStand(XLSX, await drive.laden(meta.id)).daten;
+    const gelesen = leseStand(XLSX, await drive.laden(meta.id)), R = gelesen.daten;
     const M = !geraet.basis && !hatEintraege(L) ? R : zusammenfuehren(geraet.basis || null, L, R);
     const D = { ...M, ungesichert: L.ungesichert, excelGesichert: L.excelGesichert, geaendert: L.geaendert };
-    if (gleicherInhalt(M, R)) return fertig(D, meta, "geladen");
+    // gleicher Inhalt: nur übernehmen – außer die Datei hat noch ein älteres Format, dann neu schreiben
+    if (gleicherInhalt(M, R) && gelesen.format >= FORMAT) return fertig(D, meta, "geladen");
     // Kurz vor dem Hochladen prüfen, ob in der Zwischenzeit ein anderes Gerät gespeichert hat – dann noch einmal
     const jetzt = await drive.info();
     if (jetzt && jetzt.modifiedTime !== meta.modifiedTime) continue;
-    return fertig(D, await drive.speichern(schreibeStand(XLSX, M), meta.id), "zusammengefuehrt");
+    return fertig(D, await drive.speichern(schreibeStand(XLSX, M), meta.id), gleicherInhalt(M, L) ? "hochgeladen" : "zusammengefuehrt");
   }
   throw Object.assign(new Error("Google Drive ändert sich gerade ständig – später noch einmal"), { code: "unruhig" });
 }

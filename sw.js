@@ -1,7 +1,7 @@
 // Zwischenspeicher, damit KISY auch ohne Netz startet (z. B. auf dem Golfplatz).
 // Programmdateien: zuerst aus dem Netz (immer aktuell), bei fehlendem Netz aus dem Zwischenspeicher.
 // Die Ordner-Zugriffe am PC (/lokal/) und Anfragen an Google werden nie zwischengespeichert.
-const CACHE = "kisy-v3";
+const CACHE = "kisy-v4";
 const DATEIEN = ["./", "index.html", "style.css", "manifest.webmanifest", "icon-180.png", "icon-192.png", "vendor/xlsx.full.min.js",
   "js/app.js", "js/grundlagen.js", "js/daten.js", "js/excel.js", "js/speicher.js", "js/grafik.js",
   "js/abgleich.js", "js/google.js", "js/konfig.js"];

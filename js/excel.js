@@ -2,10 +2,12 @@
 // Jedes Blatt hat eine ID-Spalte; damit hängen die Blätter zusammen. Namen in den Neben-Blättern sind nur zum Lesen da.
 // Zeilen, die in Excel neu angelegt werden (ohne ID), bekommen beim Einlesen eine neue ID.
 import { neueId, istDatum } from "./grundlagen.js";
-import { neueDaten, normalisieren, kindVon, hcpLesen, FORMAT } from "./daten.js";
+import { neueDaten, normalisieren, kindVon, hcpLesen, gruppenLesen, FORMAT } from "./daten.js";
 
 const EINV = "Einverständnis: ";
-const KINDER = [["ID", "id"], ["Vorname", "vorname"], ["Nachname", "nachname"], ["Geburtsdatum", "geburt", "d"], ["Gruppe", "gruppe"],
+// Spalte „Gruppe“: mehrere Gruppen durch Komma getrennt („Minis, Fortgeschrittene“); der Name bleibt wie in Format 1,
+// damit auch eine ältere KISY-Fassung die Gruppen beim Abgleich unverändert weitergibt.
+const KINDER = [["ID", "id"], ["Vorname", "vorname"], ["Nachname", "nachname"], ["Geburtsdatum", "geburt", "d"], ["Gruppe", "gruppen", "g"],
   ["Dabei seit", "seit", "d"], ["Aktiv", "aktiv", "b"], ["Eltern", "eltern"], ["Telefon Eltern", "elternTel"], ["E-Mail Eltern", "elternMail"],
   ["Notfallkontakt", "notfall"], ["Notfall-Telefon", "notfallTel"], ["Hinweise (Allergien, Medikamente)", "hinweise"], ["Notiz", "notiz"]];
 
@@ -32,7 +34,7 @@ export function schreibeStand(XLSX, D, jetzt = new Date()) {
   const wb = XLSX.utils.book_new();
   const add = (name, kopf, zeilen, breiten) => XLSX.utils.book_append_sheet(wb, blatt(XLSX, kopf, zeilen, breiten), name);
   const einvKopf = D.einvArten.map(a => EINV + a.name);
-  add("Kinder", KINDER.map(s => s[0]).concat(einvKopf), D.kinder.map(k => KINDER.map(([, f, art]) => art === "d" ? dat(k[f]) : art === "b" ? jaNein(k[f]) : k[f])
+  add("Kinder", KINDER.map(s => s[0]).concat(einvKopf), D.kinder.map(k => KINDER.map(([, f, art]) => art === "d" ? dat(k[f]) : art === "b" ? jaNein(k[f]) : art === "g" ? k[f].join(", ") : k[f])
     .concat(D.einvArten.map(a => { const v = k.einv[a.id]; return !v ? "" : istDatum(v) ? dat(v) : "ja"; }))), [12, 14, 16, 13, 12, 12, 7, 18, 16, 22, 18, 16, 30, 30]);
   add("Handicap", ["Kind-ID", "Vorname", "Nachname", "Datum", "Handicap"],
     D.kinder.flatMap(k => k.hcp.map(h => [k.id, k.vorname, k.nachname, dat(h.d), h.w < 0 ? "+" + String(-h.w).replace(".", ",") : h.w])));
@@ -40,11 +42,6 @@ export function schreibeStand(XLSX, D, jetzt = new Date()) {
     D.trainings.slice().sort((a, b) => a.d.localeCompare(b.d)).map(x => [x.id, dat(x.d), x.gruppe, x.notiz, x.da.length]), [12, 12, 14, 60, 10]);
   add("Anwesenheit", ["Training-ID", "Datum", "Kind-ID", "Vorname", "Nachname"],
     D.trainings.slice().sort((a, b) => a.d.localeCompare(b.d)).flatMap(x => x.da.map(id => [x.id, dat(x.d), id, ...namen(D, id)])));
-  add("Übungen", ["ID", "Übung", "Einheit", "Höchstwert", "Besser ist", "Ausgeblendet"],
-    D.uebungen.map(u => [u.id, u.name, u.einheit, u.max ?? "", u.besser === "niedrig" ? "niedriger" : "höher", u.aus ? "ja" : ""]), [14, 24, 10, 10, 10, 12]);
-  const uName = id => (D.uebungen.find(u => u.id === id) || {}).name || "";
-  add("Ergebnisse", ["ID", "Datum", "Kind-ID", "Vorname", "Nachname", "Übungs-ID", "Übung", "Ergebnis", "Notiz"],
-    D.ergebnisse.slice().sort((a, b) => a.d.localeCompare(b.d)).map(e => [e.id, dat(e.d), e.kind, ...namen(D, e.kind), e.uebung, uName(e.uebung), e.wert, e.notiz]));
   add("Abzeichen", ["ID", "Abzeichen", "Ausgeblendet"], D.abzeichen.map(a => [a.id, a.name, a.aus ? "ja" : ""]), [16, 28, 12]);
   const aName = id => (D.abzeichen.find(a => a.id === id) || {}).name || "";
   add("Abzeichen erreicht", ["ID", "Datum", "Kind-ID", "Vorname", "Nachname", "Abzeichen-ID", "Abzeichen", "Notiz"],
@@ -78,7 +75,7 @@ export function datum(v) {
 }
 const zahlOderNull = v => { if (typeof v === "number") return v; const s = txt(v).replace(",", "."); return s && !isNaN(+s) ? +s : null; };
 
-// Liefert { daten, hinweise } – hinweise nennt Zeilen, die nicht zugeordnet werden konnten.
+// Liefert { daten, hinweise, format } – hinweise nennt Zeilen, die nicht zugeordnet werden konnten; format = Format der Datei.
 export function leseStand(XLSX, daten) {
   const wb = XLSX.read(daten, { type: "array" });
   if (!wb.Sheets["Kinder"]) throw new Error("Das ist keine KISY-Datei (das Blatt „Kinder“ fehlt).");
@@ -98,7 +95,7 @@ export function leseStand(XLSX, daten) {
   for (const z of rows("Kinder")) {
     if (!txt(z["Vorname"]) && !txt(z["Nachname"])) continue;
     const k = { id: txt(z["ID"]) || neueId("k"), einv: {}, hcp: [] };
-    for (const [s, f, art] of KINDER) if (f !== "id") k[f] = art === "d" ? datum(z[s]) : art === "b" ? !nein(z[s]) : txt(z[s]);
+    for (const [s, f, art] of KINDER) if (f !== "id") k[f] = art === "d" ? datum(z[s]) : art === "b" ? !nein(z[s]) : art === "g" ? gruppenLesen(txt(z[s])) : txt(z[s]);
     for (const a of D.einvArten) { const v = z[EINV + a.name]; const d = datum(v); if (d) k.einv[a.id] = d; else if (ja(v)) k.einv[a.id] = "ja"; }
     if (D.kinder.some(x => x.id === k.id)) { hinweise.push(`Kinder: ID ${k.id} doppelt – zweite Zeile hat eine neue ID bekommen`); k.id = neueId("k"); }
     D.kinder.push(k);
@@ -129,21 +126,7 @@ export function leseStand(XLSX, daten) {
     if (!id || !x) { hinweise.push(`Anwesenheit: „${zeileName(z)}“ am ${txt(z["Datum"]) || "?"} nicht zugeordnet`); continue; }
     if (!x.da.includes(id)) x.da.push(id);
   }
-  const uebungen = rows("Übungen");
-  if (uebungen) D.uebungen = uebungen.filter(z => txt(z["Übung"])).map(z => ({ id: txt(z["ID"]) || neueId("u"), name: txt(z["Übung"]), einheit: txt(z["Einheit"]),
-    max: zahlOderNull(z["Höchstwert"]), besser: /^niedrig/i.test(txt(z["Besser ist"])) ? "niedrig" : "hoch", aus: ja(z["Ausgeblendet"]) }));
-  const uebungFinden = z => {
-    const id = txt(z["Übungs-ID"]), name = txt(z["Übung"]);
-    let u = D.uebungen.find(x => x.id === id) || D.uebungen.find(x => x.name.toLowerCase() === name.toLowerCase());
-    if (!u && name) { u = { id: neueId("u"), name, einheit: "", max: null, besser: "hoch", aus: false }; D.uebungen.push(u); }
-    return u;
-  };
-  for (const z of rows("Ergebnisse") || []) {
-    const id = kindFinden(z), u = uebungFinden(z), d = datum(z["Datum"]), w = zahlOderNull(z["Ergebnis"]);
-    if (w == null || !d) continue;
-    if (!id || !u) { hinweise.push(`Ergebnisse: „${zeileName(z)}“ am ${txt(z["Datum"])} nicht zugeordnet`); continue; }
-    D.ergebnisse.push({ id: txt(z["ID"]) || neueId("r"), d, kind: id, uebung: u.id, wert: w, notiz: txt(z["Notiz"]) });
-  }
+  // Blätter „Übungen“ und „Ergebnisse“ älterer Stände werden nicht mehr gelesen (Übungen gibt es seit Format 2 nicht mehr)
   const abz = rows("Abzeichen");
   if (abz) D.abzeichen = abz.filter(z => txt(z["Abzeichen"])).map(z => ({ id: txt(z["ID"]) || neueId("a"), name: txt(z["Abzeichen"]), aus: ja(z["Ausgeblendet"]) }));
   for (const z of rows("Abzeichen erreicht") || []) {
@@ -163,6 +146,11 @@ export function leseStand(XLSX, daten) {
     if (!id || !x) { hinweise.push(`Turnier-Ergebnisse: „${zeileName(z)}“ nicht zugeordnet`); continue; }
     if (!x.tn.some(p => p.kind === id)) x.tn.push({ kind: id, schlaege: zahlOderNull(z["Schläge"]), punkte: zahlOderNull(z["Punkte"]), platz: zahlOderNull(z["Platz"]), notiz: txt(z["Notiz"]) });
   }
-  for (const z of rows("Info") || []) if (txt(z["Feld"]) === "Letzte Sicherung in Google Drive") D.sicherung = datum(z["Wert"]);
-  return { daten: normalisieren(D), hinweise };
+  let format = 1;
+  for (const z of rows("Info") || []) {
+    if (txt(z["Feld"]) === "Letzte Sicherung in Google Drive") D.sicherung = datum(z["Wert"]);
+    if (txt(z["Feld"]) === "Format") format = +txt(z["Wert"]) || 1;
+  }
+  D.version = format; // ältere Formate werden beim Normalisieren umgestellt (z. B. Startgruppen ergänzt)
+  return { daten: normalisieren(D), hinweise, format };
 }

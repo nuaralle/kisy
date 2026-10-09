@@ -12,7 +12,7 @@ const $ = s => document.querySelector(s);
 const XLSX = window.XLSX;
 const XLSX_TYP = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const VERSION = "1.1";
+const VERSION = "1.2";
 
 let D = null;              // alle Daten (siehe daten.js)
 let ORDNER = null;         // Infos zum Ordner „Daten“, wenn KISY am PC über den eigenen Server läuft
@@ -20,7 +20,7 @@ let SPEICHER_OK = true;
 const SYNC = { laeuft: false, fehler: "", zuletzt: "" }; // Abgleich mit Google Drive
 let syncTimer = null, NEU_ZEICHNEN = false;
 // Einstellungen der Ansicht (nur für diese Sitzung)
-const A = { zr: "jahr", von: "", bis: "", gruppe: "", q: "", inaktive: false, sort: "quote", uebung: "" };
+const A = { zr: "jahr", von: "", bis: "", gruppe: "", q: "", inaktive: false, sort: "quote", heute: false };
 
 /* ---------- kleine Helfer ---------- */
 const h = id => esc(encodeURIComponent(id));            // ID in einer Adresse (#/kind/…)
@@ -83,15 +83,16 @@ function zeitraumWahl(mitGruppe = true) {
     ${A.zr === "frei" ? `<label class="schmal">von<input type="date" data-c="zrVon" value="${esc(A.von)}"></label><label class="schmal">bis<input type="date" data-c="zrBis" value="${esc(A.bis)}"></label>` : ""}
     ${mitGruppe ? gruppeWahl() : ""}</div>`;
 }
-const gruppenListe = () => `<datalist id="gruppenliste">${D.gruppen.map(g => `<option value="${esc(g)}">`).join("")}</datalist>`;
-const uebungWahl = (wert, attr) => `<select ${attr}>${M.aktiveUebungen(D).map(u => `<option value="${esc(u.id)}"${sel(u.id, wert)}>${esc(u.name)}</option>`).join("")}</select>`;
-const einheitHinweis = u => u.max != null ? `${esc(u.einheit || "Wert")} von ${zahlText(u.max)}` : u.einheit ? `in ${esc(u.einheit)}` : "";
-const besserText = u => u.besser === "niedrig" ? "niedriger ist besser" : "höher ist besser";
+// Häkchen für die Gruppen eines Kindes (ein Kind kann in mehreren Gruppen sein)
+function gruppenHaken(gewaehlt = []) {
+  if (!D.gruppen.length) return `<p class="klein muted">Noch keine Gruppen angelegt (unter „Mehr“).</p>`;
+  return `<fieldset class="gruppenhaken"><legend>Gruppen</legend>${D.gruppen.map(g => `<label class="chk"><input type="checkbox" name="gruppe" value="${esc(g)}"${gewaehlt.includes(g) ? " checked" : ""}> ${esc(g)}</label>`).join("")}</fieldset>`;
+}
+const gruppenKlein = k => k.gruppen.length && D.gruppen.length > 1 ? `<small>${esc(M.gruppenText(k))}</small>` : "";
 
 /* ---------- Seiten ---------- */
-const SEITEN = { training: seiteTraining, kinder: seiteKinder, kind: seiteKind, uebungen: seiteUebungen, eintragen: seiteEintragen,
-  abzeichen: seiteAbzeichen, turniere: seiteTurniere, turnier: seiteTurnier, mehr: seiteMehr };
-const REITER = { kind: "kinder", eintragen: "uebungen", turnier: "turniere" };
+const SEITEN = { training: seiteTraining, kinder: seiteKinder, kind: seiteKind, abzeichen: seiteAbzeichen, turniere: seiteTurniere, turnier: seiteTurnier, mehr: seiteMehr };
+const REITER = { kind: "kinder", turnier: "turniere" };
 function route() {
   const teile = location.hash.replace(/^#\/?/, "").split("/").map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } });
   return { teil: SEITEN[teile[0]] ? teile[0] : "training", rest: teile.slice(1) };
@@ -113,6 +114,7 @@ function seiteTraining(unter) {
   if (unter) return seiteTrainingTag(unter);
   const L = M.trainingsSortiert(D);
   return `<div class="kopf"><h2>Training</h2><button class="pri" data-a="trainingHeute">＋ Training heute</button></div>
+  ${heuteWahl()}
   ${umschalterTraining("tage")}
   ${sicherungsHinweis()}
   ${!D.kinder.length && ORDNER && ORDNER.stand ? `<div class="hinweis gut">Im Ordner „Daten“ liegt ein gespeicherter Stand (${esc(ORDNER.stand)}). <button class="klein" data-a="ordnerLaden">Diesen Stand laden</button></div>` : ""}
@@ -126,17 +128,25 @@ function seiteTraining(unter) {
     <small>${[x.gruppe || (D.gruppen.length ? "Alle Kinder" : ""), (x.notiz || "").split("\n")[0]].filter(Boolean).map(esc).join(" · ") || "&nbsp;"}</small></span>
     <span class="re"><b>${x.da.length}</b> da</span></a></li>`).join("")}</ul>` : `<div class="leer"><p>Noch keine Trainings eingetragen. Tippe auf „Training heute“.</p></div>`}`;
 }
+// „Training heute“: für welche Gruppe? (vorhandenes Training des Tages wird geöffnet)
+function heuteWahl() {
+  if (!A.heute || !D.gruppen.length) return "";
+  const da = g => D.trainings.some(x => x.d === today() && x.gruppe === g);
+  const knopf = (g, text, n) => `<button data-a="heuteGruppe" data-g="${esc(g)}"><b>${text}</b><small>${da(g) ? "schon angelegt – öffnen" : n + " Kinder"}</small></button>`;
+  return `<div class="karte"><h3>Training heute – für welche Gruppe?</h3><div class="gruppenwahl">
+    ${D.gruppen.map(g => knopf(g, esc(g), M.gruppeAnzahl(D, g))).join("")}${knopf("", "Alle Kinder", D.kinder.filter(k => k.aktiv).length)}</div>
+    <button class="leise klein" data-a="heuteZu" style="margin-top:.5rem">Abbrechen</button></div>`;
+}
 const zaehlerText = x => { const L = M.kinderFuerTraining(D, x); return `<b>${x.da.length}</b> von ${L.length} da`; };
 function anwKnopf(x, k) {
   const da = x.da.includes(k.id);
   return `<li><button type="button" class="anw" data-a="anw" data-id="${esc(x.id)}" data-k="${esc(k.id)}" aria-pressed="${da}"><span class="haken"></span>
-    <span class="n">${name(k)}${k.gruppe && !x.gruppe && D.gruppen.length > 1 ? `<small>${esc(k.gruppe)}</small>` : ""}</span></button></li>`;
+    <span class="n">${name(k)}${!x.gruppe ? gruppenKlein(k) : ""}</span></button></li>`;
 }
 function seiteTrainingTag(id) {
   const x = training(id);
   if (!x) return nichtGefunden("Dieses Training gibt es nicht (mehr).", "#/training", "Alle Trainings");
   const L = M.kinderFuerTraining(D, x), andere = M.sortiereKinder(D.kinder.filter(k => k.aktiv && !L.includes(k)));
-  const u = M.aktiveUebungen(D)[0];
   return `<a class="zurueck" href="#/training">‹ Alle Trainings</a>
   <div class="kopf"><h2>${fmtDW(x.d)}</h2><div class="zaehler" id="zaehler">${zaehlerText(x)}</div></div>
   <div class="karte"><div class="row"><label class="schmal">Datum<input type="date" value="${esc(x.d)}" data-c="tDatum" data-id="${esc(x.id)}"></label>
@@ -145,12 +155,11 @@ function seiteTrainingTag(id) {
   ${L.length ? `<ul class="anwliste">${L.map(k => anwKnopf(x, k)).join("")}</ul>` : `<p class="muted">${D.kinder.length ? "Keine aktiven Kinder in dieser Gruppe." : `Noch keine Kinder angelegt – <a href="#/kinder">jetzt anlegen</a>.`}</p>`}
   ${andere.length ? `<details><summary>Kinder aus anderen Gruppen (${andere.length})</summary><ul class="anwliste">${andere.map(k => anwKnopf(x, k)).join("")}</ul></details>` : ""}
   <div class="karte" style="margin-top:1rem"><label>Notizen zum Training (Inhalt, Wetter, Besonderes)<textarea data-i="tNotiz" data-id="${esc(x.id)}" rows="4" placeholder="z. B. Putten 2 m, Chippen ins Ziel; sonnig, 14 °C">${esc(x.notiz)}</textarea></label></div>
-  <div class="knoepfe">${u ? `<a class="knopf pri" href="#/eintragen/${h(u.id)}/${h(x.d)}">Übungsergebnisse eintragen</a>` : ""}
-    <button class="gefahr" data-a="trainingLoeschen" data-id="${esc(x.id)}">Training löschen</button></div>`;
+  <div class="knoepfe"><button class="gefahr" data-a="trainingLoeschen" data-id="${esc(x.id)}">Training löschen</button></div>`;
 }
 function seiteAnwesenheit() {
   const zr = ZR(), L = M.anwesenheit(D, zr, { gruppe: A.gruppe, sortierung: A.sort }), n = M.trainingsImZeitraum(D, zr, A.gruppe);
-  return `<div class="kopf"><h2>Training</h2><button class="pri" data-a="trainingHeute">＋ Training heute</button></div>
+  return `<div class="kopf"><h2>Training</h2></div>
   ${umschalterTraining("uebersicht")}
   <div class="karte">${zeitraumWahl()}<div class="row" style="margin-top:.6rem"><label>Sortierung<select data-c="sort"><option value="quote"${sel("quote", A.sort)}>nach Anwesenheit</option><option value="name"${sel("name", A.sort)}>nach Name</option></select></label></div></div>
   <p><b>${n}</b> Training${n === 1 ? "" : "s"} im Zeitraum (${esc(zrName())}${A.gruppe ? ", Gruppe " + esc(A.gruppe) : ""}).</p>
@@ -159,7 +168,7 @@ function seiteAnwesenheit() {
     <span class="re"><b>${a.da}</b> von ${a.von} · ${prozent(a.quote)}</span>
     <span class="balken" aria-hidden="true"><i style="width:${Math.round((a.quote || 0) * 100)}%"></i></span></a></li>`).join("")}</ul>`
     : `<div class="leer"><p>Noch keine Kinder angelegt.</p></div>`}
-  <p class="klein muted">Gezählt werden die Trainings ab „Dabei seit“ des Kindes, die für alle oder für seine Gruppe waren – und jedes Training, bei dem es da war.</p>`;
+  <p class="klein muted">Gezählt werden die Trainings ab „Dabei seit“ des Kindes, die für alle oder für eine seiner Gruppen waren – und jedes Training, bei dem es da war.</p>`;
 }
 
 /* ----- Kinder ----- */
@@ -168,7 +177,7 @@ function kinderZeilen() {
   if (!L.length) return `<p class="muted">Kein Kind passt zur Suche.</p>`;
   return `<ul class="liste">${L.map(k => {
     const a = M.anwesenheitKind(D, k, zr), hc = M.hcpAktuell(k), al = M.alter(k.geburt), fehlt = M.einvFehlt(D, k).length;
-    const info = [k.gruppe && esc(k.gruppe), al != null && al + " Jahre", hc && "Hcp " + M.hcpText(hc.w)].filter(Boolean).join(" · ");
+    const info = [k.gruppen.length && esc(M.gruppenText(k)), al != null && al + " Jahre", hc && "Hcp " + M.hcpText(hc.w)].filter(Boolean).join(" · ");
     return `<li><a class="zeile" href="#/kind/${h(k.id)}"><span><b>${name(k)}</b>
       ${!k.aktiv ? ' <span class="marker">inaktiv</span>' : ""}${k.hinweise ? ' <span class="marker orange" title="Hinweis (z. B. Allergie)">⚠ Hinweis</span>' : ""}${fehlt ? ` <span class="marker orange">${fehlt === 1 ? "1 Einverständnis fehlt" : fehlt + " Einverständnisse fehlen"}</span>` : ""}
       <small>${info || "&nbsp;"}</small></span>
@@ -187,8 +196,8 @@ function seiteMehrere() {
   return `<a class="zurueck" href="#/kinder">‹ Alle Kinder</a><h2>Mehrere Kinder anlegen</h2>
   <form class="karte" data-f="mehrere" autocomplete="off" style="margin-top:1rem">
     <label>Ein Kind pro Zeile („Vorname Nachname“)<textarea name="namen" rows="8" required placeholder="Vorname Nachname&#10;Vorname Nachname"></textarea></label>
-    <div class="row" style="margin-top:.6rem"><label>Gruppe (wenn alle dieselbe haben)<input name="gruppe" list="gruppenliste" autocomplete="off"></label>
-    <label class="schmal">Dabei seit<input type="date" name="seit" value="${today()}"></label></div>${gruppenListe()}
+    <div style="margin-top:.6rem">${gruppenHaken()}<p class="klein muted" style="margin:.2rem 0 0">Die angekreuzten Gruppen bekommen alle Kinder aus der Liste.</p></div>
+    <div class="row" style="margin-top:.6rem"><label class="schmal">Dabei seit<input type="date" name="seit" value="${today()}"></label></div>
     <div class="knoepfe" style="margin-top:1rem"><button class="pri" type="submit">Anlegen</button><a class="knopf" href="#/kinder">Abbrechen</a></div></form>`;
 }
 function seiteKind(id, modus) {
@@ -198,9 +207,8 @@ function seiteKind(id, modus) {
   if (modus === "bearbeiten") return kindFormular(k);
   const zr = M.zeitraum("jahr"), a = M.anwesenheitKind(D, k, zr), hc = M.hcpAktuell(k), al = M.alter(k.geburt);
   const abz = M.abzeichenKind(D, k.id), tur = M.turniereKind(D, k.id);
-  const uebungen = D.uebungen.filter(u => M.ergebnisseVon(D, k.id, u.id).length);
   const offen = D.abzeichen.filter(x => !x.aus && !M.hatAbzeichen(D, k.id, x.id));
-  const kopf = [k.gruppe && esc(k.gruppe), al != null && `${al} Jahre (geb. ${fmtD(k.geburt)})`, k.seit && `dabei seit ${fmtD(k.seit)}`].filter(Boolean).join(" · ");
+  const kopf = [k.gruppen.length && esc(M.gruppenText(k)), al != null && `${al} Jahre (geb. ${fmtD(k.geburt)})`, k.seit && `dabei seit ${fmtD(k.seit)}`].filter(Boolean).join(" · ");
   const tel = nr => nr ? `<a class="tel" href="${esc(telHref(nr))}">${esc(nr)}</a>` : "";
   return `<a class="zurueck" href="#/kinder">‹ Alle Kinder</a>
   <div class="kopf"><div><h2>${name(k)}${!k.aktiv ? ' <span class="marker">inaktiv</span>' : ""}</h2><p class="muted" style="margin:.2rem 0 0">${kopf}</p></div>
@@ -227,14 +235,6 @@ function seiteKind(id, modus) {
       <label class="schmal">Handicap<input name="w" inputmode="decimal" placeholder="z. B. 36,4" required></label><button type="submit">Eintragen</button></form>
     <p class="klein muted">Plus-Handicap mit „+“ davor eingeben (z. B. +1,2).</p>
   </section>
-  <section class="karte"><h3>Übungen <a class="knopf klein rechts" href="#/uebungen">Ergebnisse eintragen</a></h3>
-    ${uebungen.length ? uebungen.map(u => { const e = M.entwicklungKind(D, k.id, u); return `<div class="entw" style="padding:.5rem 0;border-top:1px solid var(--line)">
-      <span><b>${esc(u.name)}</b><small class="muted" style="display:block">${e.anzahl}× · erstes ${esc(M.wertText(u, e.erstes.wert))} am ${fmtD(e.erstes.d)}</small></span>
-      ${e.anzahl > 1 ? verlauf(e.werte, { min: u.max != null ? 0 : null, max: u.max }) : "<span class=\"verlauf\"></span>"}
-      <span class="zahlen">zuletzt <b>${esc(M.wertText(u, e.letztes.wert))}</b><br>bestes ${esc(M.wertText(u, e.bestes.wert))} ${fortschritt(e)}</span></div>
-      <details><summary>Alle Ergebnisse (${e.anzahl})</summary><ul class="namen">${M.ergebnisseVon(D, k.id, u.id).reverse().map(r => `<li><span>${fmtD(r.d)}</span><span>${esc(M.wertText(u, r.wert))} <button class="klein leise" data-a="ergebnisWeg" data-id="${esc(r.id)}" aria-label="Ergebnis vom ${fmtD(r.d)} löschen">✕</button></span></li>`).join("")}</ul></details>`; }).join("")
-      : `<p class="muted">Noch keine Ergebnisse.</p>`}
-  </section>
   <section class="karte"><h3>Abzeichen</h3>
     ${abz.length ? `<ul class="namen">${abz.map(e => `<li><span>${esc((M.abzeichenVon(D, e.abz) || {}).name || "?")}</span><span>${fmtD(e.d)} <button class="klein leise" data-a="erreichtWeg" data-id="${esc(e.id)}" aria-label="Abzeichen löschen">✕</button></span></li>`).join("")}</ul>` : `<p class="muted">Noch keine Abzeichen.</p>`}
     ${offen.length ? `<form data-f="kindAbz" data-id="${esc(k.id)}" class="row" style="margin-top:.6rem"><label>Geschafft<select name="abz">${offen.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("")}</select></label>
@@ -246,7 +246,6 @@ function seiteKind(id, modus) {
   <section class="karte"><h3>Training</h3><p style="margin:0">Dieses Jahr <b>${a.da}</b> von ${a.von} Trainings da (${prozent(a.quote)})${a.zuletzt ? `, zuletzt am ${fmtD(a.zuletzt)}` : ""}.</p></section>
   ${k.notiz ? `<section class="karte"><h3>Notiz</h3><p style="margin:0;white-space:pre-wrap">${esc(k.notiz)}</p></section>` : ""}`;
 }
-const fortschritt = e => e.anzahl < 2 || !e.fortschritt ? "" : e.fortschritt > 0 ? `<span class="plus" title="seit dem ersten Mal">▲ ${zahlText(Math.abs(e.fortschritt))}</span>` : `<span class="minus" title="seit dem ersten Mal">▼ ${zahlText(Math.abs(e.fortschritt))}</span>`;
 const turnierWerte = p => [p.schlaege != null && `${zahlText(p.schlaege)} Schläge`, p.punkte != null && `${zahlText(p.punkte)} Punkte`, p.platz != null && `<b>Platz ${zahlText(p.platz)}</b>`].filter(Boolean).join(" · ") || "–";
 
 function kindFormular(k) {
@@ -257,9 +256,10 @@ function kindFormular(k) {
   <form data-f="kind" data-id="${neu ? "" : esc(k.id)}" autocomplete="off" style="margin-top:1rem">
   <fieldset class="karte"><h3>Kind</h3><div class="grid2">
     ${f("vorname", "Vorname *", "text", " required")}${f("nachname", "Nachname")}
-    ${f("geburt", "Geburtsdatum", "date")}<label>Gruppe<input name="gruppe" value="${esc(k.gruppe)}" list="gruppenliste" autocomplete="off" placeholder="z. B. Minis"></label>
-    ${f("seit", "Dabei seit", "date")}<label class="chk"><input type="checkbox" name="aktiv"${k.aktiv ? " checked" : ""}> aktiv (kommt zum Training)</label>
-  </div><label style="margin-top:.7rem">Notiz<textarea name="notiz" rows="3">${esc(k.notiz)}</textarea></label>${gruppenListe()}</fieldset>
+    ${f("geburt", "Geburtsdatum", "date")}${f("seit", "Dabei seit", "date")}
+    <label class="chk"><input type="checkbox" name="aktiv"${k.aktiv ? " checked" : ""}> aktiv (kommt zum Training)</label>
+  </div><div style="margin-top:.7rem">${gruppenHaken(k.gruppen)}</div>
+  <label style="margin-top:.7rem">Notiz<textarea name="notiz" rows="3">${esc(k.notiz)}</textarea></label></fieldset>
   <fieldset class="karte"><h3>Eltern &amp; Notfall</h3><div class="grid2">
     ${f("eltern", "Eltern (Name)")}${f("elternTel", "Telefon Eltern", "tel")}
     ${f("elternMail", "E-Mail Eltern", "email")}<span></span>
@@ -273,45 +273,6 @@ function kindFormular(k) {
   <div class="knoepfe"><button class="pri" type="submit">Speichern</button><a class="knopf" href="${neu ? "#/kinder" : "#/kind/" + h(k.id)}">Abbrechen</a>
     ${neu ? "" : `<button type="button" class="gefahr" data-a="kindLoeschen" data-id="${esc(k.id)}">Kind löschen</button>`}</div>
   </form>`;
-}
-
-/* ----- Übungen ----- */
-function seiteUebungen() {
-  const U = M.aktiveUebungen(D);
-  if (!U.length) return `<div class="kopf"><h2>Übungen</h2></div><div class="leer"><p>Es sind keine Übungen angelegt.</p><a class="knopf pri" href="#/mehr/listen">Übungen anlegen</a></div>`;
-  if (!U.some(u => u.id === A.uebung)) A.uebung = U[0].id;
-  const u = M.uebungVon(D, A.uebung), L = M.entwicklung(D, u, ZR(), { gruppe: A.gruppe });
-  const mit = L.filter(x => x.e), ohne = L.filter(x => !x.e);
-  return `<div class="kopf"><h2>Übungen</h2><a class="knopf" href="#/mehr/listen">Übungen bearbeiten</a></div>
-  <form class="karte" data-f="eintragenStart"><h3>Ergebnisse eintragen</h3><div class="row"><label>Übung${uebungWahl(A.uebung, 'name="u"')}</label>
-    <label class="schmal">Datum<input type="date" name="d" value="${today()}" required></label><button class="pri" type="submit">Weiter</button></div></form>
-  <div class="karte"><h3>Entwicklung</h3><div class="row"><label>Übung${uebungWahl(A.uebung, 'data-c="uebung"')}</label></div>${zeitraumWahl()}
-    <p class="klein muted" style="margin:.5rem 0 0">${einheitHinweis(u)}${einheitHinweis(u) ? ", " : ""}${besserText(u)}. ▲/▼ = Veränderung seit dem ersten Ergebnis im Zeitraum.</p></div>
-  ${mit.length ? `<ul class="liste">${mit.map(({ kind: k, e }) => `<li><a class="zeile entw" href="#/kind/${h(k.id)}">
-    <span><b>${name(k)}</b><small>${e.anzahl}× · Schnitt ${zahlText(e.schnitt)}</small></span>
-    ${e.anzahl > 1 ? verlauf(e.werte, { min: u.max != null ? 0 : null, max: u.max }) : "<span class=\"verlauf\"></span>"}
-    <span class="zahlen">zuletzt <b>${esc(M.wertText(u, e.letztes.wert))}</b><br>bestes ${esc(M.wertText(u, e.bestes.wert))} ${fortschritt(e)}</span></a></li>`).join("")}</ul>`
-    : `<div class="leer"><p>Im Zeitraum noch keine Ergebnisse für „${esc(u.name)}“.</p></div>`}
-  ${ohne.length && mit.length ? `<p class="fehlt">Noch ohne Ergebnis: ${ohne.map(x => name(x.kind)).join(", ")}</p>` : ""}`;
-}
-function seiteEintragen(uid, d) {
-  const u = M.uebungVon(D, uid);
-  if (!u) return nichtGefunden("Diese Übung gibt es nicht (mehr).", "#/uebungen", "Übungen");
-  if (!istDatum(d)) d = today();
-  const daIds = new Set(D.trainings.filter(x => x.d === d).flatMap(x => x.da));
-  const vorhanden = new Set(D.ergebnisse.filter(e => e.d === d && e.uebung === u.id).map(e => e.kind));
-  let L = M.sortiereKinder(D.kinder.filter(k => (k.aktiv && (!A.gruppe || k.gruppe === A.gruppe)) || vorhanden.has(k.id)));
-  L = L.filter(k => daIds.has(k.id)).concat(L.filter(k => !daIds.has(k.id)));
-  const vorher = k => { const e = M.ergebnisseVon(D, k.id, u.id).filter(r => r.d < d).pop(); return e ? `zuletzt ${esc(M.wertText(u, e.wert))} (${fmtD(e.d)})` : ""; };
-  return `<a class="zurueck" href="#/uebungen">‹ Übungen</a>
-  <div class="kopf"><h2>${esc(u.name)}</h2><span class="muted">${einheitHinweis(u)}</span></div>
-  <div class="karte"><div class="row"><label>Übung${uebungWahl(u.id, 'data-c="eUebung"')}</label><label class="schmal">Datum<input type="date" data-c="eDatum" value="${d}"></label>${gruppeWahl()}</div>
-    <p class="klein muted" style="margin:.5rem 0 0">Jede Eingabe wird sofort gespeichert. Feld leeren = Ergebnis löschen.${daIds.size ? " Kinder, die an diesem Tag beim Training waren, stehen oben." : ""}</p></div>
-  ${L.length ? `<ul class="eingabe" data-u="${esc(u.id)}" data-d="${d}">${L.map(k => { const e = M.ergebnisAm(D, d, u.id, k.id); return `<li>
-    <span class="wer"><b>${name(k)}</b>${daIds.has(k.id) ? '<small class="ok">war beim Training</small>' : ""}<small>${vorher(k)}</small></span>
-    <span class="feld"><input type="text" inputmode="decimal" enterkeyhint="next" autocomplete="off" data-c="wert" data-k="${esc(k.id)}" value="${e ? esc(zahlText(e.wert)) : ""}" aria-label="Ergebnis ${name(k)}">${u.max != null ? `<span>/ ${zahlText(u.max)}</span>` : u.einheit ? `<span>${esc(u.einheit)}</span>` : ""}</span></li>`; }).join("")}</ul>`
-    : `<div class="leer"><p>Keine aktiven Kinder${A.gruppe ? " in dieser Gruppe" : ""}.</p></div>`}
-  <div class="knoepfe" style="margin-top:1rem"><a class="knopf pri" href="#/uebungen">Fertig</a></div>`;
 }
 
 /* ----- Abzeichen ----- */
@@ -333,7 +294,7 @@ function seiteAbzEintragen(id) {
   <form data-f="abzEintragen" data-id="${esc(a.id)}" style="margin-top:1rem">
     <div class="karte"><div class="row"><label class="schmal">Geschafft am<input type="date" name="d" value="${today()}" required></label>${gruppeWahl()}</div></div>
     <h3 style="margin:0 0 .5rem">Wer hat es geschafft?</h3>
-    ${offen.length ? `<ul class="liste">${offen.map(k => `<li><label class="chk auswahl"><input type="checkbox" name="k" value="${esc(k.id)}"> ${name(k)}${k.gruppe && !A.gruppe && D.gruppen.length > 1 ? `<small>${esc(k.gruppe)}</small>` : ""}</label></li>`).join("")}</ul>`
+    ${offen.length ? `<ul class="liste">${offen.map(k => `<li><label class="chk auswahl"><input type="checkbox" name="k" value="${esc(k.id)}"> ${name(k)}${!A.gruppe ? gruppenKlein(k) : ""}</label></li>`).join("")}</ul>`
       : `<p class="muted">Alle ${A.gruppe ? "Kinder dieser Gruppe" : "aktiven Kinder"} haben dieses Abzeichen schon.</p>`}
     <div class="knoepfe" style="margin-top:1rem"><button class="pri" type="submit"${offen.length ? "" : " disabled"}>Speichern</button><a class="knopf" href="#/abzeichen">Abbrechen</a></div>
   </form>
@@ -373,7 +334,7 @@ function seiteTurnier(id) {
     <button class="klein leise" data-a="tnWeg" data-id="${esc(x.id)}" data-k="${esc(p.kind)}" aria-label="${name(M.kindVon(D, p.kind))} entfernen">✕</button></li>`).join("")}</ul>
     <p class="klein muted">Wird sofort gespeichert. Schläge und/oder Punkte (z. B. Stableford) – was es bei dem Turnier gab.</p>` : `<p class="muted">Noch keine Kinder eingetragen.</p>`}
   ${frei.length ? `<details class="karte" style="margin-top:1rem"${tn.length ? "" : " open"}><summary><b>Kinder hinzufügen</b></summary>
-    <form data-f="tnDazu" data-id="${esc(x.id)}" style="margin-top:.5rem"><ul class="liste">${frei.map(k => `<li><label class="chk auswahl"><input type="checkbox" name="k" value="${esc(k.id)}"> ${name(k)}${k.gruppe && D.gruppen.length > 1 ? `<small>${esc(k.gruppe)}</small>` : ""}</label></li>`).join("")}</ul>
+    <form data-f="tnDazu" data-id="${esc(x.id)}" style="margin-top:.5rem"><ul class="liste">${frei.map(k => `<li><label class="chk auswahl"><input type="checkbox" name="k" value="${esc(k.id)}"> ${name(k)}${gruppenKlein(k)}</label></li>`).join("")}</ul>
     <div class="knoepfe" style="margin-top:.8rem"><button class="pri" type="submit">Hinzufügen</button></div></form></details>` : ""}
   <div class="knoepfe" style="margin-top:1rem"><button class="gefahr" data-a="turnierLoeschen" data-id="${esc(x.id)}">Turnier löschen</button></div>`;
 }
@@ -396,21 +357,9 @@ function seiteMehr() {
   </section>
   <section class="karte" id="listen"><h3>Listen bearbeiten</h3>
     <h4>Gruppen</h4>
-    ${D.gruppen.length ? `<ul class="bearb">${D.gruppen.map(g => `<li><input type="text" value="${esc(g)}" data-c="gruppeName" data-alt="${esc(g)}" aria-label="Gruppe ${esc(g)}" autocomplete="off"><button class="klein gefahr" data-a="gruppeWeg" data-g="${esc(g)}">Löschen</button></li>`).join("")}</ul>` : `<p class="muted klein">Noch keine Gruppen (z. B. „Minis“, „Mannschaft“). Ohne Gruppen gehören alle Kinder zu jedem Training.</p>`}
+    ${D.gruppen.length ? `<ul class="bearb">${D.gruppen.map(g => `<li><input type="text" value="${esc(g)}" data-c="gruppeName" data-alt="${esc(g)}" aria-label="Gruppe ${esc(g)}" autocomplete="off"><span class="klein muted">${M.gruppeAnzahl(D, g)} Kinder</span><button class="klein gefahr" data-a="gruppeWeg" data-g="${esc(g)}">Löschen</button></li>`).join("")}</ul>` : `<p class="muted klein">Keine Gruppen. Ohne Gruppen gehören alle Kinder zu jedem Training.</p>`}
+    <p class="klein muted">Umbenennen: Namen ändern und das Feld verlassen. Welche Kinder in welchen Gruppen sind, stellst du beim Kind ein.</p>
     <form data-f="gruppeNeu" class="row" autocomplete="off"><label>Neue Gruppe<input name="name" required></label><button type="submit">Hinzufügen</button></form>
-
-    <h4 style="margin-top:1.4rem">Übungen</h4>
-    <div class="bearb">${D.uebungen.map(u => { const benutzt = M.uebungBenutzt(D, u.id); return `<div class="ueb">
-      <label>Übung<input type="text" value="${esc(u.name)}" data-c="uFeld" data-id="${esc(u.id)}" data-f="name" autocomplete="off"></label>
-      <label>Einheit<input type="text" value="${esc(u.einheit)}" data-c="uFeld" data-id="${esc(u.id)}" data-f="einheit" placeholder="Treffer, m …" autocomplete="off"></label>
-      <label>Höchstwert<input type="text" inputmode="decimal" value="${u.max != null ? esc(zahlText(u.max)) : ""}" data-c="uFeld" data-id="${esc(u.id)}" data-f="max" placeholder="z. B. 10" autocomplete="off"></label>
-      <label>Besser ist<select data-c="uFeld" data-id="${esc(u.id)}" data-f="besser"><option value="hoch"${sel("hoch", u.besser)}>höher</option><option value="niedrig"${sel("niedrig", u.besser)}>niedriger</option></select></label>
-      <div class="aktionen"><label class="chk"><input type="checkbox" data-c="uFeld" data-id="${esc(u.id)}" data-f="aus"${u.aus ? " checked" : ""}> ausgeblendet</label>
-      ${benutzt ? `<span class="klein muted">hat Ergebnisse – zum Weglassen ausblenden</span>` : `<button class="klein gefahr" data-a="uebungWeg" data-id="${esc(u.id)}">Löschen</button>`}</div></div>`; }).join("")}</div>
-    <form data-f="uebungNeu" class="ueb" autocomplete="off" style="margin-top:.5rem"><label>Neue Übung<input name="name" required placeholder="z. B. Pitchen"></label>
-      <label>Einheit<input name="einheit" placeholder="Treffer, m …"></label><label>Höchstwert<input name="max" inputmode="decimal" placeholder="z. B. 10"></label>
-      <label>Besser ist<select name="besser"><option value="hoch">höher</option><option value="niedrig">niedriger</option></select></label>
-      <div class="aktionen"><button type="submit">Hinzufügen</button></div></form>
 
     <h4 style="margin-top:1.4rem">Abzeichen</h4>
     <ul class="bearb">${D.abzeichen.map(a => `<li><input type="text" value="${esc(a.name)}" data-c="aFeld" data-id="${esc(a.id)}" data-f="name" aria-label="Abzeichen" autocomplete="off">
@@ -443,6 +392,11 @@ function googleBereich() {
       Änderungen von iPhone und PC werden automatisch zusammengeführt.</p></section>`;
 }
 
+function trainingOeffnen(gruppe) {
+  const x = M.trainingFuer(D, today(), gruppe);
+  A.heute = false; persist(); geh("#/training/" + encodeURIComponent(x.id));
+}
+
 /* ---------- Klicks ---------- */
 const KLICK = {
   zuMehr() { if (mitGoogle() && !G.angemeldet() && navigator.onLine) { jetztSpeichern(); G.anmelden(false); } else geh("#/mehr"); },
@@ -458,9 +412,11 @@ const KLICK = {
   },
   trainingHeute() {
     if (!D.kinder.length && !confirm("Es sind noch keine Kinder angelegt. Trotzdem ein Training anlegen?")) return;
-    const x = D.trainings.find(t => t.d === today()) || M.neuesTraining(D, today(), "");
-    persist(); geh("#/training/" + encodeURIComponent(x.id));
+    if (D.gruppen.length) { A.heute = !A.heute; if (route().teil === "training" && !route().rest.length) render(); else geh("#/training"); window.scrollTo(0, 0); return; }
+    trainingOeffnen("");
   },
+  heuteGruppe(el) { trainingOeffnen(el.dataset.g); },
+  heuteZu() { A.heute = false; render(); },
   anw(el) {
     const x = training(el.dataset.id); if (!x) return;
     const da = el.getAttribute("aria-pressed") !== "true";
@@ -477,22 +433,18 @@ const KLICK = {
   },
   kindLoeschen(el) {
     const k = M.kindVon(D, el.dataset.id);
-    if (!confirm(`${M.kindName(k)} wirklich löschen?\n\nDabei werden auch Anwesenheit, Übungsergebnisse, Abzeichen und Turniere dieses Kindes gelöscht.\n\nTipp: Wenn das Kind nur nicht mehr kommt, stattdessen „aktiv“ ausschalten.`)) return;
+    if (!confirm(`${M.kindName(k)} wirklich löschen?\n\nDabei werden auch Anwesenheit, Abzeichen und Turniere dieses Kindes gelöscht.\n\nTipp: Wenn das Kind nur nicht mehr kommt, stattdessen „aktiv“ ausschalten.`)) return;
     M.kindLoeschen(D, k.id); persist(); toast("Gelöscht"); geh("#/kinder");
   },
   hcpWeg(el) { const k = M.kindVon(D, el.dataset.id); if (!confirm(`Handicap vom ${fmtD(el.dataset.d)} löschen?`)) return; k.hcp = k.hcp.filter(x => x.d !== el.dataset.d); persist(); render(); },
-  ergebnisWeg(el) { if (!confirm("Dieses Ergebnis löschen?")) return; D.ergebnisse = D.ergebnisse.filter(e => e.id !== el.dataset.id); persist(); render(); },
   erreichtWeg(el) { if (!confirm("Dieses Abzeichen beim Kind löschen?")) return; D.erreicht = D.erreicht.filter(e => e.id !== el.dataset.id); persist(); render(); },
   tnWeg(el) { const x = turnier(el.dataset.id); if (!confirm(`${M.kindName(M.kindVon(D, el.dataset.k))} aus diesem Turnier entfernen?`)) return; x.tn = x.tn.filter(p => p.kind !== el.dataset.k); persist(); render(); },
   turnierLoeschen(el) { const x = turnier(el.dataset.id); if (!confirm(`Turnier „${x.name}“ mit allen Ergebnissen löschen?`)) return; D.turniere = D.turniere.filter(t => t !== x); persist(); toast("Turnier gelöscht"); geh("#/turniere"); },
   gruppeWeg(el) {
-    const g = el.dataset.g, n = D.kinder.filter(k => k.gruppe === g).length;
-    if (!confirm(`Gruppe „${g}“ löschen?${n ? ` ${n} Kinder sind dann ohne Gruppe.` : ""}`)) return;
-    for (const k of D.kinder) if (k.gruppe === g) k.gruppe = "";
-    for (const x of D.trainings) if (x.gruppe === g) x.gruppe = "";
-    D.gruppen = D.gruppen.filter(x => x !== g); if (A.gruppe === g) A.gruppe = ""; persist(); render();
+    const g = el.dataset.g, n = M.gruppeAnzahl(D, g);
+    if (!confirm(`Gruppe „${g}“ löschen?${n ? ` Sie wird bei ${n} Kindern entfernt.` : ""} Trainings dieser Gruppe gelten danach für alle Kinder.`)) return;
+    M.gruppeLoeschen(D, g); if (A.gruppe === g) A.gruppe = ""; persist(); render();
   },
-  uebungWeg(el) { if (!confirm("Diese Übung löschen?")) return; D.uebungen = D.uebungen.filter(u => u.id !== el.dataset.id); persist(); render(); },
   abzWeg(el) { if (!confirm("Dieses Abzeichen aus der Liste löschen?")) return; D.abzeichen = D.abzeichen.filter(a => a.id !== el.dataset.id); persist(); render(); },
   einvWeg(el) {
     const e = D.einvArten.find(x => x.id === el.dataset.id), n = D.kinder.filter(k => k.einv[e.id]).length;
@@ -525,28 +477,17 @@ const AENDERUNG = {
   gruppe(el) { A.gruppe = el.value; render(); },
   sort(el) { A.sort = el.value; render(); },
   inaktive(el) { A.inaktive = el.checked; render(); },
-  uebung(el) { A.uebung = el.value; render(); },
   tDatum(el) { const x = training(el.dataset.id); if (!istDatum(el.value)) { el.value = x.d; return; } x.d = el.value; persist(); render(); },
   tGruppe(el) { const x = training(el.dataset.id); x.gruppe = el.value; persist(); render(); },
-  eUebung(el) { A.uebung = el.value; const d = route().rest[1]; geh(`#/eintragen/${encodeURIComponent(el.value)}/${istDatum(d) ? d : today()}`); },
-  eDatum(el) { if (!istDatum(el.value)) return; geh(`#/eintragen/${encodeURIComponent(route().rest[0])}/${el.value}`); },
-  wert(el) {
-    const L = el.closest(".eingabe"), u = M.uebungVon(D, L.dataset.u), r = M.wertPruefen(u, el.value), li = el.closest("li");
-    li.querySelector(".fehler")?.remove();
-    if (r.fehler) { el.classList.add("falsch"); li.insertAdjacentHTML("beforeend", `<span class="fehler">${esc(r.fehler)} – nicht gespeichert</span>`); return; }
-    el.classList.remove("falsch");
-    M.ergebnisSetzen(D, L.dataset.d, u.id, el.dataset.k, r.wert); persist();
-    if (r.wert != null) el.value = zahlText(r.wert);
-  },
   wFeld(el) {
     const x = turnier(el.dataset.id), f = el.dataset.f;
     if (f === "d") { if (!istDatum(el.value)) { el.value = x.d; return; } x.d = el.value; }
-    else if (f === "loecher") x.loecher = el.value.trim() ? M.wertPruefen(null, el.value).wert ?? x.loecher : null;
+    else if (f === "loecher") x.loecher = el.value.trim() ? M.zahlPruefen(el.value).wert ?? x.loecher : null;
     else x[f] = el.value.trim();
     persist(); if (f === "d" || f === "name") render();
   },
   tnWert(el) {
-    const x = turnier(el.dataset.id), p = x.tn.find(q => q.kind === el.dataset.k), r = M.wertPruefen(null, el.value);
+    const x = turnier(el.dataset.id), p = x.tn.find(q => q.kind === el.dataset.k), r = M.zahlPruefen(el.value);
     if (r.fehler) { el.classList.add("falsch"); toast(r.fehler); return; }
     el.classList.remove("falsch"); p[el.dataset.f] = r.wert; persist();
   },
@@ -556,19 +497,10 @@ const AENDERUNG = {
     await excelEinlesen(await f.arrayBuffer(), f.name);
   },
   gruppeName(el) {
-    const neu = el.value.trim(), alt = el.dataset.alt;
+    const neu = el.value.replace(/,/g, " ").trim(), alt = el.dataset.alt;
     if (!neu) { el.value = alt; return; }
     if (D.gruppen.includes(neu) && neu !== alt && !confirm(`Die Gruppe „${neu}“ gibt es schon. Beide zusammenlegen?`)) { el.value = alt; return; }
     M.gruppeUmbenennen(D, alt, neu); if (A.gruppe === alt) A.gruppe = neu; persist(); render();
-  },
-  uFeld(el) {
-    const u = M.uebungVon(D, el.dataset.id), f = el.dataset.f;
-    if (f === "name") { if (!el.value.trim()) { el.value = u.name; return; } u.name = el.value.trim(); }
-    else if (f === "einheit") u.einheit = el.value.trim();
-    else if (f === "max") { const r = M.wertPruefen(null, el.value); if (r.fehler) { toast(r.fehler); el.value = u.max != null ? zahlText(u.max) : ""; return; } u.max = r.wert; }
-    else if (f === "besser") u.besser = el.value;
-    else if (f === "aus") u.aus = el.checked;
-    persist(); toast("Gespeichert", 1200);
   },
   aFeld(el) {
     const a = M.abzeichenVon(D, el.dataset.id);
@@ -602,20 +534,19 @@ const FORMULAR = {
     let k = f.dataset.id ? M.kindVon(D, f.dataset.id) : null;
     const neu = !k;
     if (neu) { k = M.neuesKind(); D.kinder.push(k); }
-    for (const feld of ["vorname", "nachname", "geburt", "gruppe", "seit", "notiz", "eltern", "elternTel", "elternMail", "notfall", "notfallTel", "hinweise"]) k[feld] = (w[feld] || "").trim();
+    for (const feld of ["vorname", "nachname", "geburt", "seit", "notiz", "eltern", "elternTel", "elternMail", "notfall", "notfallTel", "hinweise"]) k[feld] = (w[feld] || "").trim();
+    k.gruppen = new FormData(f).getAll("gruppe");
     k.aktiv = !!w.aktiv;
     k.einv = {};
     for (const e of D.einvArten) if (w["einv_" + e.id]) k.einv[e.id] = istDatum(w["einvd_" + e.id]) ? w["einvd_" + e.id] : "ja";
-    if (k.gruppe && !D.gruppen.includes(k.gruppe)) D.gruppen = D.gruppen.concat(k.gruppe).sort(vergleich);
     persist(); toast(neu ? `${M.kindName(k)} angelegt` : "Gespeichert"); geh("#/kind/" + encodeURIComponent(k.id));
   },
   mehrere(f) {
-    const L = M.namenLesen(f.elements.namen.value), gruppe = f.elements.gruppe.value.trim(), seit = f.elements.seit.value;
+    const L = M.namenLesen(f.elements.namen.value), gruppen = new FormData(f).getAll("gruppe"), seit = f.elements.seit.value;
     if (!L.length) return;
     const doppelt = L.filter(n => D.kinder.some(k => k.vorname.toLowerCase() === n.vorname.toLowerCase() && k.nachname.toLowerCase() === n.nachname.toLowerCase()));
     if (doppelt.length && !confirm(`Schon vorhanden: ${doppelt.map(n => n.vorname + " " + n.nachname).join(", ")}.\nTrotzdem alle anlegen?`)) return;
-    for (const n of L) D.kinder.push(M.neuesKind({ ...n, gruppe, seit: istDatum(seit) ? seit : today() }));
-    if (gruppe && !D.gruppen.includes(gruppe)) D.gruppen = D.gruppen.concat(gruppe).sort(vergleich);
+    for (const n of L) D.kinder.push(M.neuesKind({ ...n, gruppen, seit: istDatum(seit) ? seit : today() }));
     persist(); toast(`${L.length} Kinder angelegt`); geh("#/kinder");
   },
   hcp(f) {
@@ -629,7 +560,6 @@ const FORMULAR = {
     const d = f.elements.d.value; if (!istDatum(d)) return;
     M.abzeichenEintragen(D, f.elements.abz.value, d, [f.dataset.id]); persist(); toast("Abzeichen eingetragen"); render();
   },
-  eintragenStart(f) { A.uebung = f.elements.u.value; geh(`#/eintragen/${encodeURIComponent(f.elements.u.value)}/${istDatum(f.elements.d.value) ? f.elements.d.value : today()}`); },
   abzEintragen(f) {
     const d = f.elements.d.value, kinder = new FormData(f).getAll("k");
     if (!istDatum(d)) return;
@@ -647,13 +577,7 @@ const FORMULAR = {
     for (const kind of kinder) if (!x.tn.some(p => p.kind === kind)) x.tn.push({ kind, schlaege: null, punkte: null, platz: null, notiz: "" });
     persist(); render();
   },
-  gruppeNeu(f) { const g = f.elements.name.value.trim(); if (!g) return; if (!D.gruppen.includes(g)) D.gruppen = D.gruppen.concat(g).sort(vergleich); persist(); render(); },
-  uebungNeu(f) {
-    const name = f.elements.name.value.trim(), r = M.wertPruefen(null, f.elements.max.value);
-    if (!name) return; if (r.fehler) { toast("Höchstwert: " + r.fehler); return; }
-    D.uebungen.push({ id: "u-" + Date.now().toString(36), name, einheit: f.elements.einheit.value.trim(), max: r.wert, besser: f.elements.besser.value, aus: false });
-    persist(); toast("Übung angelegt"); render();
-  },
+  gruppeNeu(f) { const g = f.elements.name.value.replace(/,/g, " ").trim(); if (!g) return; if (!D.gruppen.includes(g)) D.gruppen = D.gruppen.concat(g); persist(); render(); },
   abzNeu(f) { const name = f.elements.name.value.trim(); if (!name) return; D.abzeichen.push({ id: "a-" + Date.now().toString(36), name, aus: false }); persist(); render(); },
   einvNeu(f) { const name = f.elements.name.value.trim(); if (!name) return; D.einvArten.push({ id: "e-" + Date.now().toString(36), name }); persist(); render(); },
 };
@@ -765,7 +689,7 @@ function verbinden() {
   document.body.addEventListener("change", e => { const el = e.target.closest("[data-c]"); if (el && AENDERUNG[el.dataset.c]) AENDERUNG[el.dataset.c](el, e); });
   document.body.addEventListener("input", e => { const el = e.target.closest("[data-i]"); if (el && EINGABE[el.dataset.i]) EINGABE[el.dataset.i](el, e); });
   document.body.addEventListener("submit", e => { const f = e.target.closest("form[data-f]"); if (!f) return; e.preventDefault(); if (FORMULAR[f.dataset.f]) FORMULAR[f.dataset.f](f, e); });
-  // Ergebnisse eintragen: Enter springt zum nächsten Kind
+  // Turnier-Ergebnisse: Enter springt zum nächsten Feld
   document.body.addEventListener("keydown", e => {
     if (e.key !== "Enter" || !e.target.matches(".eingabe input")) return;
     e.preventDefault(); const alle = [...document.querySelectorAll(".eingabe input")], i = alle.indexOf(e.target);
@@ -791,7 +715,7 @@ async function start() {
   const rueck = G.rueckkehrVerarbeiten(); // zurück von der Google-Anmeldung?
   const s = Sp.laden();
   D = s ? M.normalisieren(s) : M.neueDaten();
-  if (!s) SPEICHER_OK = Sp.speichern(D);
+  if (!s || (s.version || 1) < M.FORMAT) SPEICHER_OK = Sp.speichern(D); // neu oder gerade auf das neue Format umgestellt
   verbinden(); render();
   if (location.hash === "#/mehr/listen") $("#listen")?.scrollIntoView();
   ORDNER = await Sp.ordnerVerfuegbar();
